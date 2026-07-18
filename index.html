@@ -714,6 +714,71 @@ function sendScheduled(e) {
       );
     };
 
+
+
+
+
+
+
+// --- SAFE STORAGE HELPERS ---
+    const safeGetLocal = (key, fallback) => {
+      try {
+        const item = localStorage.getItem(key);
+        return item ? JSON.parse(item) : fallback;
+      } catch (e) {
+        console.error(`Error parsing ${key} from local storage:`, e);
+        return fallback; // Return default data if corrupted
+      }
+    };
+
+    const safeSetLocal = (key, value) => {
+      try {
+        localStorage.setItem(key, typeof value === 'string' ? value : JSON.stringify(value));
+      } catch (e) {
+        console.error(`Error saving ${key} to local storage (Storage full?):`, e);
+        alert("Storage Warning: Could not save data. Your browser storage might be full. Try deleting templates with large embedded images.");
+      }
+    };
+
+    // --- ERROR BOUNDARY (Prevents Blank Pages) ---
+    class ErrorBoundary extends React.Component {
+      constructor(props) {
+        super(props);
+        this.state = { hasError: false, error: null };
+      }
+      static getDerivedStateFromError(error) {
+        return { hasError: true, error };
+      }
+      render() {
+        if (this.state.hasError) {
+          return (
+            <div className="flex flex-col items-center justify-center h-screen bg-[#f7f7fa] p-6 text-center">
+              <div className="bg-white p-8 rounded-3xl shadow-xl max-w-md border border-red-100">
+                <div className="w-16 h-16 bg-red-50 text-red-500 rounded-full flex items-center justify-center mx-auto mb-4">
+                  <AlertCircle size={32} />
+                </div>
+                <h1 className="text-2xl font-bold text-gray-800 mb-2">Oops! App Crashed.</h1>
+                <p className="text-sm text-gray-600 mb-6">Your local data became corrupted or the browser storage limit was exceeded. Resetting your local data will instantly restore access to the app.</p>
+                <button 
+                  onClick={() => { localStorage.clear(); window.location.reload(); }} 
+                  className="w-full py-3 bg-red-500 hover:bg-red-600 text-white font-bold rounded-xl transition-all shadow-md"
+                >
+                  Hard Reset & Recover App
+                </button>
+              </div>
+            </div>
+          );
+        }
+        return this.props.children;
+      }
+    }
+
+
+
+
+
+    
+
     // --- MAIN APPLICATION ---
     function App() {
       const [lang, setLang] = useState('en');
@@ -775,12 +840,19 @@ function sendScheduled(e) {
         return str;
       };
 
-      const toggleLanguage = () => {
-        const newLang = lang === 'en' ? 'es' : 'en';
-        setLang(newLang);
-        localStorage.setItem('mailerSend_lang', newLang);
-      };
 
+
+
+      
+const toggleLanguage = () => {
+  const newLang = lang === 'en' ? 'es' : 'en';
+  setLang(newLang);
+  safeSetLocal('mailerSend_lang', newLang);
+};
+
+
+
+      
       // INIT: Load from Local Storage and optionally Sync from Cloud
       useEffect(() => {
         // Detect Language
@@ -794,49 +866,80 @@ function sendScheduled(e) {
           }
         }
 
-        const loadLocalFallback = () => {
-          const savedTemplates = localStorage.getItem('mailerSend_templates');
-          if (savedTemplates) setTemplates(JSON.parse(savedTemplates));
-          const savedContacts = localStorage.getItem('mailerSend_contacts');
-          if (savedContacts) setContacts(JSON.parse(savedContacts));
-          const savedLogs = localStorage.getItem('mailerSend_logs');
-          if (savedLogs) setLogs(JSON.parse(savedLogs));
-          const savedStats = localStorage.getItem('mailerSend_stats');
-          if (savedStats) setStats(JSON.parse(savedStats));
+
+
+
+        
+const loadLocalFallback = () => {
+          setTemplates(safeGetLocal('mailerSend_templates', []));
+          setContacts(safeGetLocal('mailerSend_contacts', []));
+          setLogs(safeGetLocal('mailerSend_logs', []));
+          setStats(safeGetLocal('mailerSend_stats', { sent: 0 }));
+          
           const savedSignature = localStorage.getItem('mailerSend_signature');
           if (savedSignature) setSignature(savedSignature);
-          const savedAttachSig = localStorage.getItem('mailerSend_attachSignature');
-          if (savedAttachSig) setAttachSignature(JSON.parse(savedAttachSig));
+          
+          setAttachSignature(safeGetLocal('mailerSend_attachSignature', false));
           
           setIsDataLoaded(true);
         };
+
+
+
+        
 
         const savedUrl = localStorage.getItem('mailerSend_gasUrl');
         if (savedUrl) {
           setGasUrl(savedUrl);
           fetchAliases(savedUrl);
           setIsSyncing(true);
+
+
+
           
-          // Attempt to restore from cloud on load
-          fetch(savedUrl, {
-            method: 'POST',
-            body: JSON.stringify({ action: 'getData' }),
-            headers: { 'Content-Type': 'text/plain;charset=utf-8' }
-          }).then(res => {
-            if (!res.ok) throw new Error("Backend connection failed");
-            return res.json();
-          }).then(result => {
-             if (result && !result.error && Object.keys(result).length > 0) {
-               if(result.templates) { setTemplates(result.templates); localStorage.setItem('mailerSend_templates', JSON.stringify(result.templates)); }
-               if(result.contacts) { setContacts(result.contacts); localStorage.setItem('mailerSend_contacts', JSON.stringify(result.contacts)); }
-               if(result.logs) { setLogs(result.logs); localStorage.setItem('mailerSend_logs', JSON.stringify(result.logs)); }
-               if(result.stats) { setStats(result.stats); localStorage.setItem('mailerSend_stats', JSON.stringify(result.stats)); }
-               if(result.signature !== undefined) { setSignature(result.signature); localStorage.setItem('mailerSend_signature', result.signature); }
-               if(result.attachSignature !== undefined) { setAttachSignature(result.attachSignature); localStorage.setItem('mailerSend_attachSignature', result.attachSignature); }
-               if(result.quota !== undefined) { setQuota(result.quota); }
-             } else {
-               loadLocalFallback();
-             }
+// Attempt to restore from cloud on load
+fetch(savedUrl, {
+  method: 'POST',
+  body: JSON.stringify({ action: 'getData' }),
+  headers: { 'Content-Type': 'text/plain;charset=utf-8' }
+}).then(res => {
+  if (!res.ok) throw new Error("Backend connection failed");
+  return res.json();
+}).then(result => {
+   if (result && !result.error && Object.keys(result).length > 0) {
+     if(result.templates) { 
+       setTemplates(result.templates); 
+       safeSetLocal('mailerSend_templates', JSON.stringify(result.templates)); 
+     }
+     if(result.contacts) { 
+       setContacts(result.contacts); 
+       safeSetLocal('mailerSend_contacts', JSON.stringify(result.contacts)); 
+     }
+     if(result.logs) { 
+       setLogs(result.logs); 
+       safeSetLocal('mailerSend_logs', JSON.stringify(result.logs)); 
+     }
+     if(result.stats) { 
+       setStats(result.stats); 
+       safeSetLocal('mailerSend_stats', JSON.stringify(result.stats)); 
+     }
+     if(result.signature !== undefined) { 
+       setSignature(result.signature); 
+       safeSetLocal('mailerSend_signature', result.signature); 
+     }
+     if(result.attachSignature !== undefined) { 
+       setAttachSignature(result.attachSignature); 
+       safeSetLocal('mailerSend_attachSignature', result.attachSignature); 
+     }
+     if(result.quota !== undefined) { 
+       setQuota(result.quota); 
+     }
+   } else {
+     loadLocalFallback();
+   }
+
+
+  
              setIsDataLoaded(true);
              setLastSynced(new Date());
              setHasConnectionError(false);
@@ -906,110 +1009,113 @@ function sendScheduled(e) {
         setTimeout(() => setNotification(null), 4000);
       };
 
-      const addLog = (action, details, type = 'info') => {
-        const newLog = { 
-          id: Date.now().toString(), 
-          action, 
-          details, 
-          type, 
-          timestamp: Date.now(),
-          time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) + ' ' + new Date().toLocaleDateString()
-        };
-        setLogs(prev => {
-          const updated = [newLog, ...prev].slice(0, 100); 
-          localStorage.setItem('mailerSend_logs', JSON.stringify(updated));
-          return updated;
-        });
-      };
+const addLog = (action, details, type = 'info') => {
+  const newLog = { 
+    id: Date.now().toString(), 
+    action, 
+    details, 
+    type, 
+    timestamp: Date.now(),
+    time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) + ' ' + new Date().toLocaleDateString()
+  };
+  setLogs(prev => {
+    const updated = [newLog, ...prev].slice(0, 100); 
+    safeSetLocal('mailerSend_logs', updated); // Pass object directly
+    return updated;
+  });
+};
 
-      const handleSaveGasUrl = async (url) => {
-        setGasUrl(url);
-        localStorage.setItem('mailerSend_gasUrl', url);
-        setShowSetup(false);
-        fetchAliases(url);
-        confetti({ particleCount: 150, spread: 70, origin: { y: 0.6 }, colors: [COLORS.primary, COLORS.highlight, '#ffffff'] });
-        
-        setIsSyncing(true);
-        try {
-          // Check what's in the cloud
-          const res = await fetch(url, {
-             method: 'POST',
-             body: JSON.stringify({ action: 'getData' }),
-             headers: { 'Content-Type': 'text/plain;charset=utf-8' }
-          });
-          const result = await res.json();
-          
-          if (result && !result.error && Object.keys(result).length > 0) {
-             // Restore from cloud
-             if(result.templates) { setTemplates(result.templates); localStorage.setItem('mailerSend_templates', JSON.stringify(result.templates)); }
-             if(result.contacts) { setContacts(result.contacts); localStorage.setItem('mailerSend_contacts', JSON.stringify(result.contacts)); }
-             if(result.logs) { setLogs(result.logs); localStorage.setItem('mailerSend_logs', JSON.stringify(result.logs)); }
-             if(result.stats) { setStats(result.stats); localStorage.setItem('mailerSend_stats', JSON.stringify(result.stats)); }
-             if(result.signature !== undefined) { setSignature(result.signature); localStorage.setItem('mailerSend_signature', result.signature); }
-             if(result.attachSignature !== undefined) { setAttachSignature(result.attachSignature); localStorage.setItem('mailerSend_attachSignature', result.attachSignature); }
-             if(result.quota !== undefined) { setQuota(result.quota); }
-             showNotif('Backend connected & Cloud data restored!');
-             addLog('System', 'Connected Backend & Restored Cloud Data', 'success');
-          } else {
-             // Cloud is empty, upload local
-             const payload = { templates, contacts, logs, stats, signature, attachSignature };
-             await fetch(url, {
-               method: 'POST',
-               body: JSON.stringify({ action: 'saveData', payload }),
-               headers: { 'Content-Type': 'text/plain;charset=utf-8' }
-             });
-             showNotif('Backend URL Saved & Database Initialized!');
-             addLog('System', 'Connected Backend URL and Created Database', 'success');
-          }
-          setLastSynced(new Date());
-          setHasConnectionError(false);
-        } catch(e) {
-          showNotif('Connected, but cloud sync failed.', 'error');
-          setHasConnectionError(true);
-        } finally {
-          setIsSyncing(false);
-        }
-      };
+const handleSaveGasUrl = async (url) => {
+  setGasUrl(url);
+  safeSetLocal('mailerSend_gasUrl', url); // String value
+  setShowSetup(false);
+  fetchAliases(url);
+  confetti({ particleCount: 150, spread: 70, origin: { y: 0.6 }, colors: [COLORS.primary, COLORS.highlight, '#ffffff'] });
+  
+  setIsSyncing(true);
+  try {
+    // Check what's in the cloud
+    const res = await fetch(url, {
+       method: 'POST',
+       body: JSON.stringify({ action: 'getData' }),
+       headers: { 'Content-Type': 'text/plain;charset=utf-8' }
+    });
+    const result = await res.json();
+    
+    if (result && !result.error && Object.keys(result).length > 0) {
+       // Restore from cloud
+       if(result.templates) { setTemplates(result.templates); safeSetLocal('mailerSend_templates', result.templates); }
+       if(result.contacts) { setContacts(result.contacts); safeSetLocal('mailerSend_contacts', result.contacts); }
+       if(result.logs) { setLogs(result.logs); safeSetLocal('mailerSend_logs', result.logs); }
+       if(result.stats) { setStats(result.stats); safeSetLocal('mailerSend_stats', result.stats); }
+       if(result.signature !== undefined) { setSignature(result.signature); safeSetLocal('mailerSend_signature', result.signature); }
+       if(result.attachSignature !== undefined) { setAttachSignature(result.attachSignature); safeSetLocal('mailerSend_attachSignature', result.attachSignature); }
+       if(result.quota !== undefined) { setQuota(result.quota); }
+       showNotif('Backend connected & Cloud data restored!');
+       addLog('System', 'Connected Backend & Restored Cloud Data', 'success');
+    } else {
+       // Cloud is empty, upload local
+       const payload = { templates, contacts, logs, stats, signature, attachSignature };
+       await fetch(url, {
+         method: 'POST',
+         body: JSON.stringify({ action: 'saveData', payload }),
+         headers: { 'Content-Type': 'text/plain;charset=utf-8' }
+       });
+       showNotif('Backend URL Saved & Database Initialized!');
+       addLog('System', 'Connected Backend URL and Created Database', 'success');
+    }
+    setLastSynced(new Date());
+    setHasConnectionError(false);
+  } catch(e) {
+    showNotif('Connected, but cloud sync failed.', 'error');
+    setHasConnectionError(true);
+  } finally {
+    setIsSyncing(false);
+  }
+};
 
-      const saveTemplate = () => {
-        if (!subject && !body) return showNotif(t('notif_req'), 'error');
-        
-        if (editingTemplateId) {
-          const updated = templates.map(tItem => 
-            tItem.id === editingTemplateId ? { ...tItem, name: subject || 'Untitled Template', subject, body, senderName, tag: templateTag, tagColor: templateTagColor } : tItem
-          );
-          setTemplates(updated);
-          localStorage.setItem('mailerSend_templates', JSON.stringify(updated));
-          addLog('Template', `Updated template: ${subject || 'Untitled'}`, 'info');
-          showNotif(t('notif_saved'));
-        } else {
-          const newTemplate = {
-            id: Date.now().toString(),
-            name: subject || 'Untitled Template',
-            subject,
-            body,
-            senderName,
-            tag: templateTag,
-            tagColor: templateTagColor
-          };
-          const updated = [...templates, newTemplate];
-          setTemplates(updated);
-          localStorage.setItem('mailerSend_templates', JSON.stringify(updated));
-          setEditingTemplateId(newTemplate.id);
-          addLog('Template', `Created new template: ${subject || 'Untitled'}`, 'success');
-          showNotif(t('notif_saved'));
-        }
-      };
+     const saveTemplate = () => {
+  if (!subject && !body) return showNotif(t('notif_req'), 'error');
+  
+  if (editingTemplateId) {
+    const updated = templates.map(tItem => 
+      tItem.id === editingTemplateId ? { ...tItem, name: subject || 'Untitled Template', subject, body, senderName, tag: templateTag, tagColor: templateTagColor } : tItem
+    );
+    setTemplates(updated);
+    safeSetLocal('mailerSend_templates', updated); // Pass object directly
+    addLog('Template', `Updated template: ${subject || 'Untitled'}`, 'info');
+    showNotif(t('notif_saved'));
+  } else {
+    const newTemplate = {
+      id: Date.now().toString(),
+      name: subject || 'Untitled Template',
+      subject,
+      body,
+      senderName,
+      tag: templateTag,
+      tagColor: templateTagColor
+    };
+    const updated = [...templates, newTemplate];
+    setTemplates(updated);
+    safeSetLocal('mailerSend_templates', updated); // Pass object directly
+    setEditingTemplateId(newTemplate.id);
+    addLog('Template', `Created new template: ${subject || 'Untitled'}`, 'success');
+    showNotif(t('notif_saved'));
+  }
+};
 
-      const deleteTemplate = (id) => {
-        const updated = templates.filter(tItem => tItem.id !== id);
-        setTemplates(updated);
-        localStorage.setItem('mailerSend_templates', JSON.stringify(updated));
-        addLog('Template', `Deleted a template`, 'warning');
-      };
+const deleteTemplate = (id) => {
+  const updated = templates.filter(tItem => tItem.id !== id);
+  setTemplates(updated);
+  safeSetLocal('mailerSend_templates', updated); // Pass object directly
+  addLog('Template', `Deleted a template`, 'warning');
+};
 
-      const saveSignature = () => {
-        localStorage.setItem('mailerSend_signature', signature);
+const saveSignature = () => {
+  safeSetLocal('mailerSend_signature', signature); // String value
+};
+
+      
         
         // Force an immediate cloud sync so it saves instantly
         if (gasUrl) {
@@ -1031,28 +1137,31 @@ function sendScheduled(e) {
         showNotif('Signature saved!');
       };
 
-      const saveContact = () => {
-        if (!contactForm.name || !contactForm.email) return showNotif('Name and Email are required', 'error');
-        let updated;
-        if (contactForm.id) {
-          updated = contacts.map(c => c.id === contactForm.id ? contactForm : c);
-          addLog('Contact', `Updated contact: ${contactForm.name}`, 'info');
-        } else {
-          updated = [...contacts, { ...contactForm, id: Date.now().toString() }];
-          addLog('Contact', `Added new contact: ${contactForm.name}`, 'success');
-        }
-        setContacts(updated);
-        localStorage.setItem('mailerSend_contacts', JSON.stringify(updated));
-        setShowContactForm(false);
-        setContactForm({ id: '', name: '', email: '', business: '', phone: '', tag: '', note: '' });
-      };
+    const saveContact = () => {
+  if (!contactForm.name || !contactForm.email) return showNotif('Name and Email are required', 'error');
+  let updated;
+  if (contactForm.id) {
+    updated = contacts.map(c => c.id === contactForm.id ? contactForm : c);
+    addLog('Contact', `Updated contact: ${contactForm.name}`, 'info');
+  } else {
+    updated = [...contacts, { ...contactForm, id: Date.now().toString() }];
+    addLog('Contact', `Added new contact: ${contactForm.name}`, 'success');
+  }
+  setContacts(updated);
+  safeSetLocal('mailerSend_contacts', updated); // Pass array directly
+  setShowContactForm(false);
+  setContactForm({ id: '', name: '', email: '', business: '', phone: '', tag: '', note: '' });
+};
 
-      const deleteContact = (id) => {
-        const updated = contacts.filter(c => c.id !== id);
-        setContacts(updated);
-        localStorage.setItem('mailerSend_contacts', JSON.stringify(updated));
-        addLog('Contact', `Deleted a contact`, 'warning');
-      };
+const deleteContact = (id) => {
+  const updated = contacts.filter(c => c.id !== id);
+  setContacts(updated);
+  safeSetLocal('mailerSend_contacts', updated); // Pass array directly
+  addLog('Contact', `Deleted a contact`, 'warning');
+};
+
+
+    
       
       const editContact = (contact) => {
         setContactForm(contact);
@@ -1164,11 +1273,16 @@ function sendScheduled(e) {
           } else {
             showNotif(t('notif_sent'));
             addLog('Email', `Sent email to: ${to}`, 'success');
+
             
-            const newSentCount = (stats.sent || 0) + 1;
-            const newStats = { ...stats, sent: newSentCount };
-            setStats(newStats);
-            localStorage.setItem('mailerSend_stats', JSON.stringify(newStats));
+            
+    const newSentCount = (stats.sent || 0) + 1;
+const newStats = { ...stats, sent: newSentCount };
+setStats(newStats);
+safeSetLocal('mailerSend_stats', newStats); // Pass object directly
+
+
+
             
             if (newSentCount === 10) {
               setTimeout(() => confetti({ particleCount: 200, spread: 100, origin: { y: 0.5 }, colors: [COLORS.primary, COLORS.highlight, '#ffffff', '#c0c0c0'] }), 500);
@@ -1637,24 +1751,27 @@ function sendScheduled(e) {
                       </div>
                     </div>
 
-                    <div className="bg-white p-1 rounded-xl xl:rounded-2xl">
-                      <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-2 px-1 gap-2">
-                        <label className="block text-sm font-semibold text-gray-600">{t('message_body')}</label>
-                        <label className="flex items-center gap-2 cursor-pointer group w-fit">
-                          <input 
-                            type="checkbox" 
-                            checked={attachSignature} 
-                            onChange={e => {
-                              setAttachSignature(e.target.checked);
-                              localStorage.setItem('mailerSend_attachSignature', e.target.checked);
-                            }} 
-                            className="w-4 h-4 text-[#9c9eed] border-gray-300 rounded focus:ring-[#9c9eed]"
-                          />
-                          <span className="text-xs xl:text-sm font-medium text-gray-500 group-hover:text-gray-700 transition-colors">{t('attach_signature')}</span>
-                        </label>
-                      </div>
-                      <RichTextEditor value={body} onChange={setBody} t={t} />
-                    </div>
+                    
+
+         <div className="bg-white p-1 rounded-xl xl:rounded-2xl">
+  <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-2 px-1 gap-2">
+    <label className="block text-sm font-semibold text-gray-600">{t('message_body')}</label>
+    <label className="flex items-center gap-2 cursor-pointer group w-fit">
+      <input 
+        type="checkbox" 
+        checked={attachSignature} 
+        onChange={e => {
+          setAttachSignature(e.target.checked);
+          safeSetLocal('mailerSend_attachSignature', e.target.checked);
+        }} 
+        className="w-4 h-4 text-[#9c9eed] border-gray-300 rounded focus:ring-[#9c9eed]"
+      />
+      <span className="text-xs xl:text-sm font-medium text-gray-500 group-hover:text-gray-700 transition-colors">{t('attach_signature')}</span>
+    </label>
+  </div>
+  <RichTextEditor value={body} onChange={setBody} t={t} />
+</div>
+                    
 
                     <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 xl:gap-6">
                       <div className={`bg-[${COLORS.lightBg}] p-4 xl:p-5 rounded-xl xl:rounded-2xl border border-gray-100 shadow-sm`}>
@@ -2095,8 +2212,19 @@ function sendScheduled(e) {
       );
     }
 
-    const root = createRoot(document.getElementById('root'));
-    root.render(<App />);
+
+    
+
+const root = createRoot(document.getElementById('root'));
+root.render(
+  <ErrorBoundary>
+    <App />
+  </ErrorBoundary>
+);
+
+
+    
+    
   </script>
 </body>
 </html>
