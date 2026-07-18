@@ -721,15 +721,25 @@ function sendScheduled(e) {
 
 
 // --- SAFE STORAGE HELPERS ---
-    const safeGetLocal = (key, fallback) => {
-      try {
-        const item = localStorage.getItem(key);
-        return item ? JSON.parse(item) : fallback;
-      } catch (e) {
-        console.error(`Error parsing ${key} from local storage:`, e);
-        return fallback; // Return default data if corrupted
-      }
-    };
+const safeGetLocal = (key, fallback) => {
+  try {
+    const item = localStorage.getItem(key);
+    if (!item) return fallback;
+    const parsed = JSON.parse(item);
+    // Validate data types to prevent corruption from breaking the app
+    if (key === 'mailerSend_templates' && !Array.isArray(parsed)) return fallback;
+    if (key === 'mailerSend_contacts' && !Array.isArray(parsed)) return fallback;
+    if (key === 'mailerSend_logs' && !Array.isArray(parsed)) return fallback;
+    if (key === 'mailerSend_stats' && typeof parsed !== 'object') return fallback;
+    return parsed;
+  } catch (e) {
+    console.error(`Error parsing ${key} from local storage:`, e);
+    return fallback; // Return default data if corrupted
+  }
+};
+
+
+    
 
     const safeSetLocal = (key, value) => {
       try {
@@ -859,12 +869,13 @@ const toggleLanguage = () => {
         const savedLang = localStorage.getItem('mailerSend_lang');
         if (savedLang) {
           setLang(savedLang);
-        } else {
-          const browserLang = navigator.language || navigator.userLanguage;
-          if (browserLang && browserLang.toLowerCase().startsWith('es')) {
-            setLang('es');
-          }
-        }
+       } else {
+  const browserLang = navigator.language || navigator.userLanguage;
+  if (browserLang && browserLang.toLowerCase().startsWith('es')) {
+    setLang('es');
+    safeSetLocal('mailerSend_lang', 'es'); // Save detected language
+  }
+}
 
 
 
@@ -876,7 +887,7 @@ const loadLocalFallback = () => {
           setLogs(safeGetLocal('mailerSend_logs', []));
           setStats(safeGetLocal('mailerSend_stats', { sent: 0 }));
           
-          const savedSignature = localStorage.getItem('mailerSend_signature');
+          const savedSignature = safeGetLocal('mailerSend_signature', '');
           if (savedSignature) setSignature(savedSignature);
           
           setAttachSignature(safeGetLocal('mailerSend_attachSignature', false));
@@ -909,7 +920,7 @@ fetch(savedUrl, {
    if (result && !result.error && Object.keys(result).length > 0) {
      if(result.templates) { 
        setTemplates(result.templates); 
-       safeSetLocal('mailerSend_templates', JSON.stringify(result.templates)); 
+       safeSetLocal('mailerSend_templates', result.templates);
      }
      if(result.contacts) { 
        setContacts(result.contacts); 
@@ -1110,34 +1121,13 @@ const deleteTemplate = (id) => {
   safeSetLocal('mailerSend_templates', updated); // Pass object directly
   addLog('Template', `Deleted a template`, 'warning');
 };
-
+      
 const saveSignature = () => {
-  safeSetLocal('mailerSend_signature', signature); // String value
+  safeSetLocal('mailerSend_signature', signature);
+  showNotif('Signature saved!');
 };
 
-      
-        
-        // Force an immediate cloud sync so it saves instantly
-        if (gasUrl) {
-          setIsSyncing(true);
-          const payload = { templates, contacts, logs, stats, signature, attachSignature };
-          fetch(gasUrl, {
-            method: 'POST',
-            body: JSON.stringify({ action: 'saveData', payload }),
-            headers: { 'Content-Type': 'text/plain;charset=utf-8' }
-          }).then(() => {
-            setLastSynced(new Date());
-            setHasConnectionError(false);
-          }).catch(() => {
-            setHasConnectionError(true);
-          }).finally(() => setIsSyncing(false));
-        }
-
-        addLog('Signature', 'Updated email signature', 'info');
-        showNotif('Signature saved!');
-      };
-
-    const saveContact = () => {
+const saveContact = () => {
   if (!contactForm.name || !contactForm.email) return showNotif('Name and Email are required', 'error');
   let updated;
   if (contactForm.id) {
@@ -1160,242 +1150,233 @@ const deleteContact = (id) => {
   addLog('Contact', `Deleted a contact`, 'warning');
 };
 
+const editContact = (contact) => {
+  setContactForm(contact);
+  setShowContactForm(true);
+};
 
+const loadTemplate = (template) => {
+  setSubject(template.subject);
+  setBody(template.body);
+  if(template.senderName) setSenderName(template.senderName);
+  if(template.tag) setTemplateTag(template.tag); else setTemplateTag('');
+  if(template.tagColor) setTemplateTagColor(template.tagColor); else setTemplateTagColor('#9c9eed');
+  setEditingTemplateId(template.id);
+  setView('compose');
+};
+
+const resetForm = () => {
+  setTo('');
+  setSubject('');
+  setBody('');
+  setSenderName('');
+  if (aliases.length > 0) setFromAlias(aliases[0]);
+  setAttachments([]);
+  setScheduleDate('');
+  setScheduleTime('');
+  setTemplateTag('');
+  setTemplateTagColor('#9c9eed');
+  setEditingTemplateId(null);
+};
+
+const handleFileUpload = (e) => {
+  const files = Array.from(e.target.files);
+  let totalSize = attachments.reduce((acc, file) => acc + file.size, 0);
+  const newAttachments = [];
+  
+  files.forEach(file => {
+    if (totalSize + file.size > 10 * 1024 * 1024) {
+      showNotif(`Skipped ${file.name}: Exceeds 10MB.`, 'error');
+      return;
+    }
+    totalSize += file.size;
     
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      newAttachments.push({
+        id: Math.random().toString(36).substr(2, 9),
+        name: file.name,
+        mimeType: file.type,
+        data: event.target.result.split(',')[1],
+        size: file.size
+      });
+      if (newAttachments.length === files.length) {
+         setAttachments(prev => [...prev, ...newAttachments]);
+      }
+    };
+    reader.readAsDataURL(file);
+  });
+};
+
+const removeAttachment = (id) => {
+  setAttachments(attachments.filter(a => a.id !== id));
+};
+
+const sendEmail = async () => {
+  if (!gasUrl) return setShowSetup(true);
+  if (!to || !subject) return showNotif(t('notif_req'), 'error');
+
+  setIsLoading(true);
+
+  let scheduledTimestamp = null;
+  if (scheduleDate && scheduleTime) {
+    scheduledTimestamp = new Date(`${scheduleDate}T${scheduleTime}`).getTime();
+    if (scheduledTimestamp <= new Date().getTime()) {
+      setIsLoading(false);
+      return showNotif('Scheduled time must be in the future.', 'error');
+    }
+  }
+
+  let finalBody = body;
+  if (attachSignature && signature) {
+    finalBody += `<br/><br/>${signature}`;
+  }
+
+  const payload = {
+    to, subject, body: finalBody, senderName, fromAlias,
+    attachments: attachments.map(({name, mimeType, data}) => ({name, mimeType, data})),
+    scheduledTime: scheduledTimestamp
+  };
+
+  try {
+    const response = await fetch(gasUrl, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' }
+    });
+
+    // Google Script sometimes returns HTML error pages if deployed wrong
+    const contentType = response.headers.get("content-type");
+    if (contentType && !contentType.includes("application/json")) {
+       throw new Error("Invalid response format. Re-deploy script as 'Web App' with access 'Anyone'.");
+    }
+
+    const result = await response.json();
+    if (result.error) throw new Error(result.error);
+
+    if (result.status === 'scheduled') {
+      showNotif(`Email scheduled for ${scheduleDate} ${scheduleTime}`);
+      addLog('Email', `Scheduled email to: ${to}`, 'success');
+    } else {
+      showNotif(t('notif_sent'));
+      addLog('Email', `Sent email to: ${to}`, 'success');
+
+      const newSentCount = (stats.sent || 0) + 1;
+      const newStats = { ...stats, sent: newSentCount };
+      setStats(newStats);
+      safeSetLocal('mailerSend_stats', newStats); // Pass object directly
+
+      if (newSentCount === 10) {
+        setTimeout(() => confetti({ particleCount: 200, spread: 100, origin: { y: 0.5 }, colors: [COLORS.primary, COLORS.highlight, '#ffffff', '#c0c0c0'] }), 500);
+      } else if (newSentCount === 50) {
+        setTimeout(() => confetti({ particleCount: 300, spread: 120, origin: { y: 0.5 }, colors: [COLORS.primary, COLORS.highlight, '#ffffff', '#FFD700'] }), 500);
+      } else if (newSentCount === 100) {
+        setShowGoldPopup(true);
+        const duration = 5 * 1000;
+        const animationEnd = Date.now() + duration;
+        const defaults = { startVelocity: 30, spread: 360, ticks: 60, zIndex: 100 };
+        const interval = setInterval(function() {
+          const timeLeft = animationEnd - Date.now();
+          if (timeLeft <= 0) return clearInterval(interval);
+          const particleCount = 50 * (timeLeft / duration);
+          confetti(Object.assign({}, defaults, { particleCount, origin: { x: Math.random(), y: Math.random() - 0.2 } }));
+        }, 250);
+      } else if (newSentCount === 1) {
+        setTimeout(() => confetti({ particleCount: 150, spread: 70, origin: { y: 0.5 }, colors: [COLORS.primary, COLORS.highlight, '#ffffff'] }), 500);
+      }
+    }
+    
+    if (result.quota !== undefined) {
+       setQuota(result.quota);
+    }
+
+    setTo('');
+    setAttachments([]);
+    setScheduleDate('');
+    setScheduleTime('');
+    setHasConnectionError(false);
+  } catch (err) {
+    console.error(err);
+    const diagMsg = err.message.includes('Unexpected token') || err.message.includes('format') 
+        ? 'Backend returned invalid format. Check deployment settings (Anyone).' 
+        : `Failed to send: ${err.message}`;
+    showNotif(diagMsg, 'error');
+    addLog('Error', `Send failed: ${err.message}`, 'error');
+    setHasConnectionError(true);
+  } finally {
+    setIsLoading(false);
+  }
+};
+
+const clearLogs = () => {
+  if(confirm('Are you sure?')) {
+    setLogs([]);
+    safeSetLocal('mailerSend_logs', []);
+  }
+};
+
+const getBadgeProps = (count, isTopCounter = false) => {
+  if (count >= 100) return { icon: BadgeGold, colorClass: "bg-purple-100", label: t('badge_gold') };
+  if (count >= 50) return { icon: BadgeSilver, colorClass: "bg-yellow-100", label: t('badge_silver') };
+  if (count >= 10) return { icon: BadgeBronze, colorClass: "bg-slate-100", label: t('badge_bronze') };
+  
+  if (isTopCounter) {
+     return { icon: BadgeDefault, colorClass: "bg-[#f0e6ff]", label: t('badge_starter_short') };
+  }
+  return { icon: BadgeDefault, colorClass: "bg-[#f0e6ff]", label: t('badge_starter') };
+};
+
+const overviewBadgeProps = getBadgeProps(stats.sent || 0, false);
+const OverviewBadgeIcon = overviewBadgeProps.icon;
+
+const displayQuota = useMemo(() => {
+  if (quota !== null) return quota;
+  const startOfDay = new Date(new Date().setHours(0,0,0,0)).getTime();
+  const sentToday = logs.filter(l => l.action === 'Email' && l.timestamp && l.timestamp >= startOfDay).length;
+  return Math.max(0, 100 - sentToday);
+}, [quota, logs]);
+
+const activityData = useMemo(() => {
+  const last7Days = Array.from({length: 7}, (_, i) => {
+    const d = new Date();
+    d.setDate(d.getDate() - (6 - i));
+    return d;
+  });
+  
+  const counts = last7Days.map((targetDate) => {
+    // Get exactly midnight to midnight for the target day
+    const startOfDay = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate()).getTime();
+    const endOfDay = startOfDay + 24 * 60 * 60 * 1000;
+    
+    return logs.filter(l => {
+      if (l.action !== 'Email') return false;
       
-      const editContact = (contact) => {
-        setContactForm(contact);
-        setShowContactForm(true);
-      };
+      // Use precise timestamp if available
+      if (l.timestamp) {
+        return l.timestamp >= startOfDay && l.timestamp < endOfDay;
+      }
+      
+      // Fallback for older logs
+      const dateStr = targetDate.toLocaleDateString();
+      return l.time && l.time.includes(dateStr);
+    }).length;
+  });
 
-      const loadTemplate = (template) => {
-        setSubject(template.subject);
-        setBody(template.body);
-        if(template.senderName) setSenderName(template.senderName);
-        if(template.tag) setTemplateTag(template.tag); else setTemplateTag('');
-        if(template.tagColor) setTemplateTagColor(template.tagColor); else setTemplateTagColor('#9c9eed');
-        setEditingTemplateId(template.id);
-        setView('compose');
-      };
+  const max = Math.max(...counts, 5);
+  return counts.map((count, i) => ({
+    label: last7Days[i].toLocaleDateString([], {weekday: 'short'}),
+    value: count,
+    height: (count / max) * 100
+  }));
+}, [logs]);
 
-      const resetForm = () => {
-        setTo('');
-        setSubject('');
-        setBody('');
-        setSenderName('');
-        if (aliases.length > 0) setFromAlias(aliases[0]);
-        setAttachments([]);
-        setScheduleDate('');
-        setScheduleTime('');
-        setTemplateTag('');
-        setTemplateTagColor('#9c9eed');
-        setEditingTemplateId(null);
-      };
-
-      const handleFileUpload = (e) => {
-        const files = Array.from(e.target.files);
-        let totalSize = attachments.reduce((acc, file) => acc + file.size, 0);
-        const newAttachments = [];
-        
-        files.forEach(file => {
-          if (totalSize + file.size > 10 * 1024 * 1024) {
-            showNotif(`Skipped ${file.name}: Exceeds 10MB.`, 'error');
-            return;
-          }
-          totalSize += file.size;
-          
-          const reader = new FileReader();
-          reader.onload = (event) => {
-            newAttachments.push({
-              id: Math.random().toString(36).substr(2, 9),
-              name: file.name,
-              mimeType: file.type,
-              data: event.target.result.split(',')[1],
-              size: file.size
-            });
-            if (newAttachments.length === files.length) {
-               setAttachments(prev => [...prev, ...newAttachments]);
-            }
-          };
-          reader.readAsDataURL(file);
-        });
-      };
-
-      const removeAttachment = (id) => {
-        setAttachments(attachments.filter(a => a.id !== id));
-      };
-
-      const sendEmail = async () => {
-        if (!gasUrl) return setShowSetup(true);
-        if (!to || !subject) return showNotif(t('notif_req'), 'error');
-
-        setIsLoading(true);
-
-        let scheduledTimestamp = null;
-        if (scheduleDate && scheduleTime) {
-          scheduledTimestamp = new Date(`${scheduleDate}T${scheduleTime}`).getTime();
-          if (scheduledTimestamp <= new Date().getTime()) {
-            setIsLoading(false);
-            return showNotif('Scheduled time must be in the future.', 'error');
-          }
-        }
-
-        let finalBody = body;
-        if (attachSignature && signature) {
-          finalBody += `<br/><br/>${signature}`;
-        }
-
-        const payload = {
-          to, subject, body: finalBody, senderName, fromAlias,
-          attachments: attachments.map(({name, mimeType, data}) => ({name, mimeType, data})),
-          scheduledTime: scheduledTimestamp
-        };
-
-        try {
-          const response = await fetch(gasUrl, {
-            method: 'POST',
-            body: JSON.stringify(payload),
-            headers: { 'Content-Type': 'text/plain;charset=utf-8' }
-          });
-
-          // Google Script sometimes returns HTML error pages if deployed wrong
-          const contentType = response.headers.get("content-type");
-          if (contentType && !contentType.includes("application/json")) {
-             throw new Error("Invalid response format. Re-deploy script as 'Web App' with access 'Anyone'.");
-          }
-
-          const result = await response.json();
-          if (result.error) throw new Error(result.error);
-
-          if (result.status === 'scheduled') {
-            showNotif(`Email scheduled for ${scheduleDate} ${scheduleTime}`);
-            addLog('Email', `Scheduled email to: ${to}`, 'success');
-          } else {
-            showNotif(t('notif_sent'));
-            addLog('Email', `Sent email to: ${to}`, 'success');
-
-            
-            
-    const newSentCount = (stats.sent || 0) + 1;
-const newStats = { ...stats, sent: newSentCount };
-setStats(newStats);
-safeSetLocal('mailerSend_stats', newStats); // Pass object directly
-
-
-
-            
-            if (newSentCount === 10) {
-              setTimeout(() => confetti({ particleCount: 200, spread: 100, origin: { y: 0.5 }, colors: [COLORS.primary, COLORS.highlight, '#ffffff', '#c0c0c0'] }), 500);
-            } else if (newSentCount === 50) {
-              setTimeout(() => confetti({ particleCount: 300, spread: 120, origin: { y: 0.5 }, colors: [COLORS.primary, COLORS.highlight, '#ffffff', '#FFD700'] }), 500);
-            } else if (newSentCount === 100) {
-              setShowGoldPopup(true);
-              const duration = 5 * 1000;
-              const animationEnd = Date.now() + duration;
-              const defaults = { startVelocity: 30, spread: 360, ticks: 60, zIndex: 100 };
-              const interval = setInterval(function() {
-                const timeLeft = animationEnd - Date.now();
-                if (timeLeft <= 0) return clearInterval(interval);
-                const particleCount = 50 * (timeLeft / duration);
-                confetti(Object.assign({}, defaults, { particleCount, origin: { x: Math.random(), y: Math.random() - 0.2 } }));
-              }, 250);
-            } else if (newSentCount === 1) {
-              setTimeout(() => confetti({ particleCount: 150, spread: 70, origin: { y: 0.5 }, colors: [COLORS.primary, COLORS.highlight, '#ffffff'] }), 500);
-            }
-          }
-          
-          if (result.quota !== undefined) {
-             setQuota(result.quota);
-          }
-
-          setTo('');
-          setAttachments([]);
-          setScheduleDate('');
-          setScheduleTime('');
-          setHasConnectionError(false);
-        } catch (err) {
-          console.error(err);
-          const diagMsg = err.message.includes('Unexpected token') || err.message.includes('format') 
-              ? 'Backend returned invalid format. Check deployment settings (Anyone).' 
-              : `Failed to send: ${err.message}`;
-          showNotif(diagMsg, 'error');
-          addLog('Error', `Send failed: ${err.message}`, 'error');
-          setHasConnectionError(true);
-        } finally {
-          setIsLoading(false);
-        }
-      };
-
-      const clearLogs = () => {
-        if(confirm('Are you sure?')) {
-           setLogs([]);
-           localStorage.removeItem('mailerSend_logs');
-        }
-      };
-
-      const getBadgeProps = (count, isTopCounter = false) => {
-        if (count >= 100) return { icon: BadgeGold, colorClass: "bg-purple-100", label: t('badge_gold') };
-        if (count >= 50) return { icon: BadgeSilver, colorClass: "bg-yellow-100", label: t('badge_silver') };
-        if (count >= 10) return { icon: BadgeBronze, colorClass: "bg-slate-100", label: t('badge_bronze') };
-        
-        if (isTopCounter) {
-           return { icon: BadgeDefault, colorClass: "bg-[#f0e6ff]", label: t('badge_starter_short') };
-        }
-        return { icon: BadgeDefault, colorClass: "bg-[#f0e6ff]", label: t('badge_starter') };
-      };
-
-      const overviewBadgeProps = getBadgeProps(stats.sent || 0, false);
-      const OverviewBadgeIcon = overviewBadgeProps.icon;
-
-      const displayQuota = useMemo(() => {
-        if (quota !== null) return quota;
-        const startOfDay = new Date(new Date().setHours(0,0,0,0)).getTime();
-        const sentToday = logs.filter(l => l.action === 'Email' && l.timestamp && l.timestamp >= startOfDay).length;
-        return Math.max(0, 100 - sentToday);
-      }, [quota, logs]);
-
-      const activityData = useMemo(() => {
-        const last7Days = Array.from({length: 7}, (_, i) => {
-          const d = new Date();
-          d.setDate(d.getDate() - (6 - i));
-          return d;
-        });
-        
-        const counts = last7Days.map((targetDate) => {
-          // Get exactly midnight to midnight for the target day
-          const startOfDay = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate()).getTime();
-          const endOfDay = startOfDay + 24 * 60 * 60 * 1000;
-          
-          return logs.filter(l => {
-            if (l.action !== 'Email') return false;
-            
-            // Use precise timestamp if available
-            if (l.timestamp) {
-              return l.timestamp >= startOfDay && l.timestamp < endOfDay;
-            }
-            
-            // Fallback for older logs
-            const dateStr = targetDate.toLocaleDateString();
-            return l.time && l.time.includes(dateStr);
-          }).length;
-        });
-
-        const max = Math.max(...counts, 5);
-        return counts.map((count, i) => ({
-          label: last7Days[i].toLocaleDateString([], {weekday: 'short'}),
-          value: count,
-          height: (count / max) * 100
-        }));
-      }, [logs]);
-
-      const uniqueTags = useMemo(() => {
-         const tags = new Map();
-         templates.forEach(t => {
-            if(t.tag && t.tag.trim() !== '') tags.set(t.tag, t.tagColor || '#9c9eed');
-         });
-         return Array.from(tags.entries()).map(([name, color]) => ({name, color}));
-      }, [templates]);
-
+const uniqueTags = useMemo(() => {
+   const tags = new Map();
+   templates.forEach(t => {
+      if(t.tag && t.tag.trim() !== '') tags.set(t.tag, t.tagColor || '#9c9eed');
+   });
+   return Array.from(tags.entries()).map(([name, color]) => ({name, color}));
+}, [templates]);
       return (
         <div className="flex flex-col h-screen font-sans text-gray-800 selection:bg-[#dfa4d4] selection:text-white">
           
